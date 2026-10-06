@@ -1,5 +1,14 @@
 import type { Connection } from '@xyflow/react'
-import type { NodeDefinition, PortType, WorkflowEdge, WorkflowNode } from '../types/workflow'
+import type {
+  ExecutionSession,
+  FlowRevision,
+  NodeDefinition,
+  NodeKind,
+  PortType,
+  RunStatus,
+  WorkflowEdge,
+  WorkflowNode,
+} from '../types/workflow'
 
 export const NODE_DEFINITIONS: NodeDefinition[] = [
   {
@@ -213,4 +222,189 @@ export function sampleWorkflow(): { nodes: WorkflowNode[]; edges: WorkflowEdge[]
       { id: 'e6', source: aggregate.id, sourceHandle: 'out-0', target: sink.id, targetHandle: 'in-1', type: 'smoothstep', data: { portType: 'number' } },
     ],
   }
+}
+
+/** 递归稳定序列化：对象按键名排序，保证哈希与键顺序无关 */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const keys = Object.keys(record).sort()
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/** FNV-1a 32 位哈希，返回 8 位十六进制 */
+function hashString(text: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+/** 节点身份哈希：只认 kind + config（业务参数），位置/名称/说明不影响执行结果 */
+export function nodeIdentityHash(node: WorkflowNode): string {
+  return hashString(stableStringify({ kind: node.data.kind, config: node.data.config }))
+}
+
+/** 连线身份哈希：只认源/目标节点与端口句柄 */
+export function edgeIdentityHash(edge: WorkflowEdge): string {
+  return hashString(stableStringify({
+    source: edge.source,
+    target: edge.target,
+    sourceHandle: edge.sourceHandle ?? null,
+    targetHandle: edge.targetHandle ?? null,
+  }))
+}
+
+/** 冻结当前画布修订：深拷贝节点/连线身份并计算各级哈希 */
+export function freezeRevision(nodes: WorkflowNode[], edges: WorkflowEdge[]): FlowRevision {
+  const frozenNodes = nodes.map((node) => ({
+    id: node.id,
+    kind: node.data.kind,
+    label: node.data.label,
+    config: JSON.parse(JSON.stringify(node.data.config)) as WorkflowNode['data']['config'],
+  }))
+  const frozenEdges = edges.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    sourceHandle: edge.sourceHandle ?? null,
+    targetHandle: edge.targetHandle ?? null,
+  }))
+  const nodeHash: Record<string, string> = {}
+  nodes.forEach((node) => { nodeHash[node.id] = nodeIdentityHash(node) })
+  const edgeHash: Record<string, string> = {}
+  edges.forEach((edge) => { edgeHash[edge.id] = edgeIdentityHash(edge) })
+  const revisionHash = hashString(stableStringify({
+    nodes: Object.entries(nodeHash).sort(([a], [b]) => a.localeCompare(b)),
+    edges: Object.entries(edgeHash).sort(([a], [b]) => a.localeCompare(b)),
+  }))
+  return {
+    frozenAt: new Date().toISOString(),
+    nodes: frozenNodes,
+    edges: frozenEdges,
+    nodeHash,
+    edgeHash,
+    revisionHash,
+  }
+}
+
+export interface ResumePlan {
+  /** 可复用缓存结果的节点（身份未变且所有上游一致） */
+  reusable: string[]
+  /** 失效必须重跑的节点（身份变更 / 上游变更或缺失 / 无成功结果） */
+  stale: string[]
+  /** 画布中已不存在的冻结节点 id */
+  missing: string[]
+  /** 当前画布存在环 */
+  cycle: boolean
+}
+
+function incomingKey(source: string, sourceHandle: string | null | undefined, targetHandle: string | null | undefined) {
+  return `${source}|${sourceHandle ?? ''}|${targetHandle ?? ''}`
+}
+
+/**
+ * 续跑核对：以会话冻结修订为准，逐节点核对当前画布。
+ * 节点可复用当且仅当：节点仍存在、kind+config 哈希一致、
+ * 入边集合与冻结版本完全一致、所有上游节点均可复用、且会话中已有 success 结果。
+ * 任一条件不满足则该节点失效，失效会沿依赖向下游传播，旁支不受影响。
+ */
+export function computeResumePlan(
+  session: ExecutionSession,
+  liveNodes: WorkflowNode[],
+  liveEdges: WorkflowEdge[],
+): ResumePlan {
+  const liveById = new Map(liveNodes.map((node) => [node.id, node]))
+  const nodeHashLive = new Map(liveNodes.map((node) => [node.id, nodeIdentityHash(node)]))
+  const frozenIds = session.revision.nodes.map((node) => node.id)
+  const missing = frozenIds.filter((id) => !liveById.has(id))
+  const cycle = topologicalOrder(liveNodes, liveEdges).length !== liveNodes.length
+
+  const liveIncoming = new Map<string, Set<string>>()
+  liveEdges.forEach((edge) => {
+    const set = liveIncoming.get(edge.target) ?? new Set<string>()
+    set.add(incomingKey(edge.source, edge.sourceHandle, edge.targetHandle))
+    liveIncoming.set(edge.target, set)
+  })
+  const frozenIncoming = new Map<string, Set<string>>()
+  session.revision.edges.forEach((edge) => {
+    const set = frozenIncoming.get(edge.target) ?? new Set<string>()
+    set.add(incomingKey(edge.source, edge.sourceHandle, edge.targetHandle))
+    frozenIncoming.set(edge.target, set)
+  })
+
+  const memo = new Map<string, boolean>()
+  const reusable = (id: string): boolean => {
+    if (memo.has(id)) return memo.get(id) as boolean
+    memo.set(id, false) // 环保护
+    const live = liveById.get(id)
+    if (!live) return false
+    if (nodeHashLive.get(id) !== session.revision.nodeHash[id]) return false
+    if (session.results[id]?.status !== 'success') return false
+    const liveKeys = liveIncoming.get(id) ?? new Set<string>()
+    const frozenKeys = frozenIncoming.get(id) ?? new Set<string>()
+    if (liveKeys.size !== frozenKeys.size) return false
+    for (const key of liveKeys) {
+      if (!frozenKeys.has(key)) return false
+    }
+    for (const edge of session.revision.edges.filter((item) => item.target === id)) {
+      if (!reusable(edge.source)) return false
+    }
+    memo.set(id, true)
+    return true
+  }
+
+  const reusableIds = frozenIds.filter(reusable)
+  const reusableSet = new Set(reusableIds)
+  return {
+    reusable: reusableIds,
+    stale: frozenIds.filter((id) => !reusableSet.has(id)),
+    missing,
+    cycle,
+  }
+}
+
+export interface NodeViewState {
+  status: RunStatus
+  duration?: number
+  rows?: number
+  /** 会话中存在结果，但相对当前画布已过期（改动后待重跑） */
+  stale: boolean
+}
+
+/**
+ * 节点视图状态：把会话结果按 id+哈希匹配投影到画布节点。
+ * 身份不匹配（运行中被改动）的节点不显示旧结果，避免新改动混入执行结果。
+ */
+export function nodeViewState(
+  node: WorkflowNode,
+  session: ExecutionSession | null,
+  plan: ResumePlan | null,
+): NodeViewState {
+  if (!session) return { status: 'idle', stale: false }
+  if (session.currentNodeId === node.id) return { status: 'running', stale: false }
+  const result = session.results[node.id]
+  const hashMatches = session.revision.nodeHash[node.id] === nodeIdentityHash(node)
+  if (result && hashMatches) {
+    return {
+      status: result.status === 'running' ? 'running' : result.status,
+      duration: result.duration,
+      rows: result.rows,
+      stale: false,
+    }
+  }
+  const stale = !!plan?.stale.includes(node.id) && result?.status === 'success'
+  return { status: 'idle', stale }
+}
+
+/** 会话展示时间：MM-DD HH:mm:ss */
+export function sessionTimeLabel(iso: string): string {
+  const date = new Date(iso)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }

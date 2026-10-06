@@ -1,5 +1,6 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { CheckCircleFilled, ClockCircleOutlined, CloseCircleFilled, LoadingOutlined } from '@ant-design/icons'
+import { Tag } from 'antd'
 import type { RunStatus, WorkflowNode } from '../types/workflow'
 import { definitionFor } from '../utils/workflow'
 
@@ -34,6 +35,7 @@ export default function WorkflowNodeCard({ data, selected }: NodeProps<WorkflowN
         <span className={`node-status status-${data.status}`}>
           {statusIcon[data.status]}
           {data.status}
+          {data.stale && <Tag color="warning" className="stale-badge">结果已过期</Tag>}
         </span>
       </div>
       <strong>{data.label}</strong>

@@ -10,10 +10,11 @@ import {
   type Connection,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useWorkflowStore } from '../stores/workflow'
 import WorkflowNodeCard from './WorkflowNodeCard'
 import type { WorkflowNode } from '../types/workflow'
+import { computeResumePlan, nodeViewState } from '../utils/workflow'
 
 const nodeTypes = { workflow: WorkflowNodeCard }
 
@@ -22,6 +23,8 @@ function CanvasInner() {
   const reactFlow = useReactFlow<WorkflowNode>()
   const nodes = useWorkflowStore((state) => state.nodes)
   const edges = useWorkflowStore((state) => state.edges)
+  const sessions = useWorkflowStore((state) => state.sessions)
+  const activeSessionId = useWorkflowStore((state) => state.activeSessionId)
   const onNodesChange = useWorkflowStore((state) => state.onNodesChange)
   const onEdgesChange = useWorkflowStore((state) => state.onEdgesChange)
   const connect = useWorkflowStore((state) => state.connect)
@@ -35,6 +38,23 @@ function CanvasInner() {
   const redo = useWorkflowStore((state) => state.redo)
   const notice = useWorkflowStore((state) => state.notice)
   const clearNotice = useWorkflowStore((state) => state.clearNotice)
+
+  // 画布只投影当前会话（运行中为冻结会话）的结果；编辑中的节点按哈希失配显示 idle，不混入旧结果
+  const displaySession = useMemo(() => {
+    if (activeSessionId) return sessions.find((session) => session.id === activeSessionId) ?? null
+    return sessions.length ? sessions[sessions.length - 1] : null
+  }, [sessions, activeSessionId])
+  const plan = useMemo(
+    () => (displaySession ? computeResumePlan(displaySession, nodes, edges) : null),
+    [displaySession, nodes, edges],
+  )
+  const viewNodes = useMemo(
+    () => nodes.map((node) => ({
+      ...node,
+      data: { ...node.data, ...nodeViewState(node, displaySession, plan) },
+    })),
+    [nodes, displaySession, plan],
+  )
 
   useEffect(() => {
     const timer = window.setTimeout(clearNotice, 3200)
@@ -82,7 +102,7 @@ function CanvasInner() {
   return (
     <div ref={wrapperRef} className="flow-wrapper" onDrop={handleDrop} onDragOver={(event) => event.preventDefault()}>
       <ReactFlow
-        nodes={nodes}
+        nodes={viewNodes}
         edges={edges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
