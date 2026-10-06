@@ -1,5 +1,5 @@
-import { Button, Divider, Form, Input, InputNumber, Select, Space, Switch, Tag, Typography } from 'antd'
-import { DeleteOutlined } from '@ant-design/icons'
+import { Button, Divider, Form, Input, InputNumber, Select, Space, Switch, Tag, Tooltip, Typography } from 'antd'
+import { DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { statusLabel, useWorkflowStore } from '../stores/workflow'
 import { definitionFor } from '../utils/workflow'
 
@@ -10,7 +10,15 @@ export default function Inspector() {
   const edge = useWorkflowStore((state) => state.edges.find((item) => item.id === state.selectedEdgeId))
   const updateNode = useWorkflowStore((state) => state.updateNode)
   const updateConfig = useWorkflowStore((state) => state.updateConfig)
+  const updateForceFailure = useWorkflowStore((state) => state.updateForceFailure)
   const deleteSelection = useWorkflowStore((state) => state.deleteSelection)
+  const session = useWorkflowStore((state) =>
+    state.sessions.find((item) => item.id === state.activeSessionId) ?? null,
+  )
+  const running = useWorkflowStore((state) => state.running)
+  const record = node && session
+    ? session.results.find((item) => item.nodeId === node.id)
+    : undefined
 
   if (!selectedNodeId && !selectedEdgeId) {
     return (
@@ -41,6 +49,8 @@ export default function Inspector() {
 
   if (!node) return null
   const definition = definitionFor(node.data.kind)
+  const frozen = session?.revision.nodes.find((item) => item.id === node.id)
+  const frozenInconsistent = !!session && !!frozen && JSON.stringify(frozen.config) !== JSON.stringify(node.data.config)
   return (
     <aside className="inspector-panel">
       <div className="panel-heading">
@@ -48,7 +58,13 @@ export default function Inspector() {
           <Typography.Title level={5}>节点属性</Typography.Title>
           <Typography.Text type="secondary">ID: {node.id}</Typography.Text>
         </div>
-        <Tag color={definition.color}>{statusLabel(node.data.status)}</Tag>
+        <Tag color={
+          node.data.status === 'success' ? 'green'
+            : node.data.status === 'error' ? 'red'
+              : node.data.status === 'stale' ? 'orange'
+                : node.data.status === 'skipped' ? 'default'
+                  : 'blue'
+        }>{statusLabel(node.data.status)}</Tag>
       </div>
       <Form layout="vertical" className="inspector-form">
         <Form.Item label="节点名称">
@@ -85,11 +101,38 @@ export default function Inspector() {
             )}
           </Form.Item>
         ))}
+        <Form.Item
+          label={<span><ThunderboltOutlined /> 模拟失败断点</span>}
+          tooltip="开启后，下次执行到该节点将模拟失败；修复后可续跑（断点会冻结进执行修订）"
+        >
+          <Tooltip title={running ? '执行进行中：改动只影响画布，不影响本次冻结会话' : undefined}>
+            <Switch
+              checked={node.data.forceFailure ?? false}
+              disabled={running}
+              onChange={(checked) => updateForceFailure(node.id, checked)}
+            />
+          </Tooltip>
+        </Form.Item>
       </Form>
       <Space direction="vertical" style={{ width: '100%' }}>
+        {record?.error && (
+          <div className="run-error-box">
+            <Typography.Text type="danger" strong>失败原因</Typography.Text>
+            <Typography.Text type="danger" style={{ fontSize: 12 }}>{record.error}</Typography.Text>
+          </div>
+        )}
+        {frozenInconsistent && (
+          <div className="run-warn-box">
+            <Typography.Text type="warning" strong>画布参数已偏离冻结修订</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              进行中的会话仍按冻结版本执行；结束后续跑需核对确认，受影响节点及下游将重算。
+            </Typography.Text>
+          </div>
+        )}
         <div className="run-facts">
           <span>输入端口：{definition.inputs.join(' / ') || '无'}</span>
           <span>输出端口：{definition.outputs.join(' / ') || '无'}</span>
+          <span>所属会话：{session ? `${session.name}（${session.revision.id.slice(0, 6)}）` : '无'}</span>
           <span>最近耗时：{node.data.duration ?? '--'} ms</span>
           <span>处理行数：{node.data.rows?.toLocaleString('zh-CN') ?? '--'}</span>
         </div>

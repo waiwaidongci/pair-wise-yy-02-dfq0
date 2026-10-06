@@ -11,7 +11,6 @@ import {
   SnippetsOutlined,
   UndoOutlined,
 } from '@ant-design/icons'
-import { useRef } from 'react'
 import type { UploadProps } from 'antd'
 import NodePalette from '../components/NodePalette'
 import Inspector from '../components/Inspector'
@@ -21,17 +20,10 @@ import type { WorkflowDocument } from '../types/workflow'
 
 export default function EditorView() {
   const { message } = AntApp.useApp()
-  const uploadRef = useRef<HTMLInputElement>(null)
   const store = useWorkflowStore()
 
   function exportJson() {
-    const document: WorkflowDocument = {
-      version: 1,
-      name: store.name,
-      nodes: store.nodes,
-      edges: store.edges,
-      savedAt: new Date().toISOString(),
-    }
+    const document = store.exportDocument()
     const blob = new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const anchor = window.document.createElement('a')
@@ -39,7 +31,7 @@ export default function EditorView() {
     anchor.download = `${store.name.replace(/\s+/g, '-')}.json`
     anchor.click()
     URL.revokeObjectURL(url)
-    message.success('流程 JSON 已导出')
+    message.success(`流程与 ${document.sessions?.length ?? 0} 个执行会话已导出`)
   }
 
   const uploadProps: UploadProps = {
@@ -48,9 +40,16 @@ export default function EditorView() {
     beforeUpload: async (file) => {
       try {
         const document = JSON.parse(await file.text()) as WorkflowDocument
-        if (!Array.isArray(document.nodes) || !Array.isArray(document.edges)) throw new Error('JSON 缺少 nodes 或 edges')
-        store.loadDocument(document)
-        message.success('流程导入成功')
+        if (!Array.isArray(document.nodes) || !Array.isArray(document.edges)) {
+          throw new Error('JSON 缺少 nodes 或 edges')
+        }
+        if (document.version === 2 || document.sessions) {
+          const result = store.importDocument(document)
+          message.success(`导入完成：画布已恢复，载入 ${result.imported} 个会话，保留 ${result.skipped} 个旧记录`)
+        } else {
+          store.loadDocument(document)
+          message.success('v1 流程导入成功（不含执行会话）')
+        }
       } catch (error) {
         message.error(error instanceof Error ? error.message : '流程 JSON 无效')
       }
@@ -59,9 +58,11 @@ export default function EditorView() {
   }
 
   async function run() {
-    message.loading({ content: '正在模拟执行...', key: 'run' })
-    await store.simulate()
-    message.success({ content: '模拟执行完成', key: 'run' })
+    message.loading({ content: '已冻结修订，正在执行...', key: 'run' })
+    await store.startRun()
+    const session = useWorkflowStore.getState().sessions.at(-1)
+    if (session?.status === 'success') message.success({ content: '模拟执行完成', key: 'run' })
+    else message.warning({ content: '执行未全部成功，可从检查点续跑', key: 'run' })
   }
 
   return (
@@ -87,7 +88,9 @@ export default function EditorView() {
           <Upload {...uploadProps}><Button icon={<CloudUploadOutlined />}>导入</Button></Upload>
           <Button icon={<CloudDownloadOutlined />} onClick={exportJson}>导出</Button>
           <Button icon={<ReloadOutlined />} onClick={store.reset}>重置</Button>
-          <Button type="primary" icon={<PlayCircleOutlined />} loading={store.running} onClick={run}>模拟执行</Button>
+          <Button type="primary" icon={<PlayCircleOutlined />} loading={store.running} onClick={run}>
+            模拟执行
+          </Button>
         </Space>
       </header>
       <main className="editor-grid">

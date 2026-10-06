@@ -12,6 +12,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useEffect, useRef } from 'react'
 import { useWorkflowStore } from '../stores/workflow'
+import SessionPanel from './SessionPanel'
 import WorkflowNodeCard from './WorkflowNodeCard'
 import type { WorkflowNode } from '../types/workflow'
 
@@ -103,6 +104,7 @@ function CanvasInner() {
         <Controls />
         {notice && <Panel position="top-center"><div className="canvas-notice">{notice}</div></Panel>}
       </ReactFlow>
+      <SessionPanel />
     </div>
   )
 }

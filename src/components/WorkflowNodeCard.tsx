@@ -1,5 +1,12 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { CheckCircleFilled, ClockCircleOutlined, CloseCircleFilled, LoadingOutlined } from '@ant-design/icons'
+import {
+  CheckCircleFilled,
+  ClockCircleOutlined,
+  CloseCircleFilled,
+  LoadingOutlined,
+  MinusCircleFilled,
+  WarningFilled,
+} from '@ant-design/icons'
 import type { RunStatus, WorkflowNode } from '../types/workflow'
 import { definitionFor } from '../utils/workflow'
 
@@ -9,7 +16,18 @@ const statusIcon: Record<RunStatus, React.ReactNode> = {
   running: <LoadingOutlined spin />,
   success: <CheckCircleFilled />,
   error: <CloseCircleFilled />,
-  skipped: <ClockCircleOutlined />,
+  skipped: <MinusCircleFilled />,
+  stale: <WarningFilled />,
+}
+
+const statusText: Record<RunStatus, string> = {
+  idle: 'idle',
+  queued: 'queued',
+  running: 'running',
+  success: 'success',
+  error: 'error',
+  skipped: 'skipped',
+  stale: 'stale',
 }
 
 export default function WorkflowNodeCard({ data, selected }: NodeProps<WorkflowNode>) {
@@ -33,7 +51,7 @@ export default function WorkflowNodeCard({ data, selected }: NodeProps<WorkflowN
         <span className="node-kind">{data.kind}</span>
         <span className={`node-status status-${data.status}`}>
           {statusIcon[data.status]}
-          {data.status}
+          {statusText[data.status]}
         </span>
       </div>
       <strong>{data.label}</strong>

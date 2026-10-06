@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:checkpoint": "esbuild scripts/checkpoint.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/checkpoint.test.mjs && node node_modules/.tmp/checkpoint.test.mjs",
+    "test:store": "esbuild scripts/checkpoint.store.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/checkpoint.store.test.mjs && node node_modules/.tmp/checkpoint.store.test.mjs",
+    "test": "corepack pnpm test:checkpoint && corepack pnpm test:store"
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",
@@ -22,6 +25,7 @@
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.2",
+    "esbuild": "^0.28.2",
     "typescript": "~5.9.3",
     "vite": "^7.1.7"
   }
